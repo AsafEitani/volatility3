@@ -4,7 +4,7 @@
 
 import datetime
 import logging
-from typing import Iterable, Callable
+from typing import Iterable, Callable, Tuple
 
 from volatility.framework import renderers, interfaces
 from volatility.framework.configuration import requirements
@@ -90,6 +90,9 @@ class PsScan(interfaces.plugins.PluginInterface, timeliner.TimeLinerInterface):
 
         """
 
+        version = cls.get_osversion(context, layer_name, symbol_table)
+
+        # If it's WinXP->8.1 we have now a physical process address.
         # We'll use the first thread to bounce back to the virtual process
         kvo = context.layers[layer_name].config['kernel_virtual_offset']
         ntkrnlmp = context.module(symbol_table, layer_name = layer_name, offset = kvo)
@@ -100,13 +103,7 @@ class PsScan(interfaces.plugins.PluginInterface, timeliner.TimeLinerInterface):
 
         # If (and only if) we're dealing with 64-bit Windows 7 SP1
         # then add the other commonly seen member offset to the list
-        kuser = info.Info.get_kuser_structure(context, layer_name, symbol_table)
-        nt_major_version = int(kuser.NtMajorVersion)
-        nt_minor_version = int(kuser.NtMinorVersion)
-        vers = info.Info.get_version_structure(context, layer_name, symbol_table)
-        build = vers.MinorVersion
         bits = context.layers[layer_name].bits_per_register
-        version = (nt_major_version, nt_minor_version, build)
         if version == (6, 1, 7601) and bits == 64:
             offsets.append(tleoffset + 8)
 
@@ -126,6 +123,26 @@ class PsScan(interfaces.plugins.PluginInterface, timeliner.TimeLinerInterface):
                     proc.vol.offset == ph_offset:
                 return virtual_process
 
+    @classmethod
+    def get_osversion(cls, context: interfaces.context.ContextInterface, layer_name: str,
+                      symbol_table: str) -> Tuple[int, int, int]:
+        """Returns the complete OS version (MAJ,MIN,BUILD)
+
+        Args:
+            context: The context to retrieve required elements (layers, symbol tables) from
+            layer_name: The name of the layer on which to operate
+            symbol_table: The name of the table containing the kernel symbols
+
+        Returns:
+            A tuple with (MAJ,MIN,BUILD)
+        """
+        kuser = info.Info.get_kuser_structure(context, layer_name, symbol_table)
+        nt_major_version = int(kuser.NtMajorVersion)
+        nt_minor_version = int(kuser.NtMinorVersion)
+        vers = info.Info.get_version_structure(context, layer_name, symbol_table)
+        build = vers.MinorVersion
+        return (nt_major_version, nt_minor_version, build)
+
     def _generator(self):
         pe_table_name = intermed.IntermediateSymbolTable.create(self.context,
                                                                 self.config_path,
@@ -139,11 +156,15 @@ class PsScan(interfaces.plugins.PluginInterface, timeliner.TimeLinerInterface):
 
             file_output = "Disabled"
             if self.config['dump']:
-                vproc = self.virtual_process_from_physical(self.context, self.config['primary'],
-                                                           self.config['nt_symbols'], proc)
+                # windows 10 objects (maybe others in the future) are already in virtual memory
+                if proc.vol.layer_name == self.config['primary']:
+                    vproc = proc
+                else:
+                    vproc = self.virtual_process_from_physical(self.context, self.config['primary'],
+                                                               self.config['nt_symbols'], proc)
 
-                file_handle = pslist.PsList.process_dump(self.context, self.config['nt_symbols'], pe_table_name,
-                                                         vproc, self.open)
+                file_handle = pslist.PsList.process_dump(self.context, self.config['nt_symbols'], pe_table_name, vproc,
+                                                         self.open)
                 file_output = "Error outputting file"
                 if file_handle:
                     file_output = file_handle.preferred_filename

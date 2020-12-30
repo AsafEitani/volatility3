@@ -24,20 +24,21 @@ class PDBUtility:
     """Class to handle and manage all getting symbols based on MZ header"""
 
     @classmethod
-    def symbol_table_from_offset(cls,
-                                 context: interfaces.context.ContextInterface,
-                                 layer_name: str,
-                                 offset: int,
-                                 symbol_table_class: str,
-                                 config_path: str = None,
-                                 progress_callback: constants.ProgressCallback = None) -> Optional[str]:
+    def symbol_table_from_offset(
+            cls,
+            context: interfaces.context.ContextInterface,
+            layer_name: str,
+            offset: int,
+            symbol_table_class: str = "volatility.framework.symbols.intermed.IntermediateSymbolTable",
+            config_path: str = None,
+            progress_callback: constants.ProgressCallback = None) -> Optional[str]:
         """Produces the name of a symbol table loaded from the offset for an MZ header
 
         Args:
             context: The context on which to operate
             layer_name: The name of the (contiguous) layer within the context that contains the MZ file
             offset: The offset in the layer at which the MZ file begins
-            symbol_table_class: The type of symbol class to construct the SymbolTable
+            symbol_table_class: The class to use when constructing the SymbolTable
             config_path: New path for the produced symbol table configuration with the config tree
             progress_callback: Callable called to update ongoing progress
 
@@ -132,13 +133,34 @@ class PDBUtility:
         max_size = pe_data.OPTIONAL_HEADER.SizeOfImage
 
         # Proper data
-        pe_header = layer.read(offset, max_size)
-        pe_data = pefile.PE(data = pe_header)
+        virtual_data = layer.read(offset, max_size)
+        pe_data = pefile.PE(data = virtual_data)
+
+        # De-virtualize the memory
+        sizeofHdrs = pe_data.OPTIONAL_HEADER.SizeOfHeaders
+        physical_data = virtual_data[:sizeofHdrs]
+        # Might need to put them in order by PointerToRawData just validate they are in order
+        for sect in pe_data.sections:
+            physical_data += virtual_data[sect.VirtualAddress:sect.VirtualAddress + sect.SizeOfRawData]
+
+        pe_data = pefile.PE(data = physical_data)
+
         if not hasattr(pe_data, 'DIRECTORY_ENTRY_DEBUG') or not len(pe_data.DIRECTORY_ENTRY_DEBUG):
             return None
 
-        # Extract the data
-        debug_entry = pe_data.DIRECTORY_ENTRY_DEBUG[0].entry
+        # Swap the Pointer with the Address since the de-virtualization doesn't apply to the fields
+        debug_entry = None
+        for index in range(len(pe_data.DIRECTORY_ENTRY_DEBUG)):
+            if pe_data.DIRECTORY_ENTRY_DEBUG[index].struct.Type == 2:
+                debug_data = pe_data.DIRECTORY_ENTRY_DEBUG[index]
+                pe_data.set_dword_at_offset(debug_data.struct.get_field_absolute_offset('AddressOfRawData'),
+                                            debug_data.struct.PointerToRawData)
+                pe_data.full_load()
+                debug_entry = pe_data.DIRECTORY_ENTRY_DEBUG[index].entry
+
+        if debug_entry is None:
+            return None
+
         pdb_name = debug_entry.PdbFileName.decode("utf-8").strip('\x00')
         age = debug_entry.Age
         guid = "{:x}{:x}{:x}{}".format(debug_entry.Signature_Data1, debug_entry.Signature_Data2,
@@ -173,7 +195,7 @@ class PDBUtility:
                     if filename:
                         tmp_files.append(filename)
                         location = "file:" + request.pathname2url(tmp_files[-1])
-                        json_output = pdbconv.PdbReader(context, location, progress_callback).get_json()
+                        json_output = pdbconv.PdbReader(context, location, pdb_name, progress_callback).get_json()
                         of.write(bytes(json.dumps(json_output, indent = 2, sort_keys = True), 'utf-8'))
                         # After we've successfully written it out, record the fact so we don't clear it out
                         data_written = True

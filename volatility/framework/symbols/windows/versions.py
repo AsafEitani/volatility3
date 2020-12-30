@@ -32,7 +32,7 @@ class OsDistinguisher:
     """
 
     def __init__(self, version_check: Callable[[Tuple[int, ...]], bool], fallback_checks: List[Tuple[str, Optional[str],
-                                                                                                     bool]]):
+                                                                                                     bool]]) -> None:
         self._version_check = version_check
         self._fallback_checks = fallback_checks
 
@@ -106,6 +106,9 @@ is_win10_16299_or_later = OsDistinguisher(version_check = lambda x: x >= (10, 0,
                                                              ("_HANDLE_TABLE", "HandleCount", False),
                                                              ("_EPROCESS", "KeepAliveCounter", False),
                                                              ("_EPROCESS", "ControlFlowGuardEnabled", False)])
+
+is_win10_18363_or_later = OsDistinguisher(version_check = lambda x: x >= (10, 0, 18363),
+                                          fallback_checks = [("_KQOS_GROUPING_SETS", None, True)])
 
 is_windows_10 = OsDistinguisher(version_check = lambda x: x >= (10, 0),
                                 fallback_checks = [("ObHeaderCookie", None, True)])
